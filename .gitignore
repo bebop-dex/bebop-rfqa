@@ -1,0 +1,25 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Hardhat artifacts
+cache/
+artifacts/
+typechain-types/
+
+# Build output
+coverage/
+coverage.json
+
+# Editor
+.DS_Store
+.vscode/
+.idea/
+.claude/
+
+# Logs
+*.log
