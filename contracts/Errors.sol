@@ -69,6 +69,9 @@ error HooksShorterThanMakers();
 error HookMakerNonceNotFound();
 /// @dev A hook execution reverted and revertOnFail is true
 error HookExecutionFailed();
+/// @dev Raw-call hook (useBebopHook=false) data starts with the bebopHook selector.
+///      Disallowed because it would bypass the maker-signed swap-legs path.
+error BebopHookSelectorBanned();
 
 // --- Native token errors ---
 /// @dev Native ETH transfer via .call{value} failed

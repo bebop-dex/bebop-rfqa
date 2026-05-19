@@ -9,6 +9,7 @@
     "test:gas": "REPORT_GAS=true npx hardhat test",
     "deploy:router": "npx hardhat run scripts/deploy-router.ts",
     "deploy:oracle": "npx hardhat run scripts/deploy-oracle.ts",
+    "deploy:maker-aave": "npx hardhat run scripts/deploy-maker-aave-helper.ts",
     "verify:router": "npx hardhat run scripts/verify-router.ts"
   },
   "keywords": [],

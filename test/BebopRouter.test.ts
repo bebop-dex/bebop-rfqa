@@ -750,6 +750,127 @@ describe("BebopRouter", function () {
       const o: RouterOrder = { fromAmount: 100n, toAmount: 100n, limitAmount: 0n, fromToken: USDC, toToken: WETH, pmmFromToken: USDC, pmmToToken: WETH, tokensOwner: user.address, receiver: receiver.address, originAddress: ethers.ZeroAddress, oracle: ethers.ZeroAddress, checker: ethers.ZeroAddress, info: packInfo(BigInt(Math.floor(Date.now()/1000)+3600)), routerNonce: 998n, unsignedFlags: 0n };
       await expect(router.connect(user).settle(0n, o, "0x", "0x"+"00".repeat(65), "0x4dcebcba"+"00".repeat(388), [], "0x"+"00".repeat(65))).to.be.revertedWithCustomError(router, "ExactAmountZeroForSettle");
     });
+
+    // Security guard: when useBebopHook=false (raw call), the router must reject any hook
+    // whose data starts with the bebopHook(address,bytes,(uint256,address,uint256,address)[])
+    // selector. Otherwise a caller could forge a privileged call to a hook contract's
+    // bebopHook entrypoint while skipping the maker-signed bebopHook path.
+    it("should revert raw-call hook whose data starts with bebopHook selector", async function () {
+      const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
+      const routerNonce = nonceCounter++;
+      const makerNonce = nonceCounter++;
+      const fromAmount = e18("0.1");
+      const toAmount = e6(300);
+
+      // Minimal valid PMM single calldata — never actually executes; pre-hook revert
+      // fires inside _executeSwapCore before the PMM call.
+      const pmmOrder: PmmSingleOrder = {
+        expiry, taker_address: routerAddr, maker_address: makers[0].address,
+        maker_nonce: makerNonce, taker_token: WETH, maker_token: USDC,
+        taker_amount: fromAmount, maker_amount: toAmount,
+        receiver: routerAddr, packed_commands: 0n, flags: 0n,
+      };
+      const makerSig = await signPmmSingleOrder(makers[0], BEBOP_PMM, chainId, pmmOrder, 0n);
+      const pmmCalldata = encodePmmSwapSingle(pmmOrder, makerSig, 0n);
+
+      // Craft data = bebopHook selector + 32 zero bytes. First 4 bytes match
+      // IBebopHook.bebopHook.selector, which the router's raw-call path bans.
+      const bebopHookSelector = ethers.id(
+        "bebopHook(address,bytes,(uint256,address,uint256,address)[])"
+      ).slice(0, 10); // "0x" + 8 hex chars
+      const maliciousData = bebopHookSelector + "00".repeat(32);
+
+      // Hook flags: maker=address(0), postHook=false, revertOnFail=true,
+      //             useBebopHook=false (raw call), needsApproval=false
+      const hookFlags = (1n << 161n);
+      const maliciousHook = {
+        targetContract: makers[0].address, // arbitrary; never reached
+        data: maliciousData,
+        hookSignature: "0x",
+        flags: hookFlags,
+      };
+
+      // hooksHash for a single hook with maker=0 → nonce=0
+      const HOOK_SIGN_TYPE_HASH = ethers.keccak256(ethers.toUtf8Bytes(
+        "BebopHook(address targetContract,bytes32 dataHash,uint256 makerNonce,uint256 flags)"
+      ));
+      const hookHash = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+        ["bytes32", "address", "bytes32", "uint256", "uint256"],
+        [HOOK_SIGN_TYPE_HASH, maliciousHook.targetContract, ethers.keccak256(maliciousHook.data), 0n, maliciousHook.flags]
+      ));
+      const hooksHash = ethers.keccak256(ethers.solidityPacked(["bytes32"], [hookHash]));
+
+      const order: RouterOrder = {
+        fromAmount, toAmount, limitAmount: 0n,
+        fromToken: NATIVE_TOKEN, toToken: USDC,
+        pmmFromToken: WETH, pmmToToken: USDC,
+        tokensOwner: ethers.ZeroAddress, receiver: receiver.address,
+        originAddress: ethers.ZeroAddress, oracle: ethers.ZeroAddress, checker: ethers.ZeroAddress,
+        info: packInfo(expiry), routerNonce, unsignedFlags: 0n,
+      };
+      const routerSig = await signRouterOrder(routerSigner, routerAddr, chainId, order, "0x", hooksHash);
+
+      await expect(
+        router.connect(user).swap(fromAmount, order, "0x", routerSig, pmmCalldata, [maliciousHook], { value: fromAmount })
+      ).to.be.revertedWithCustomError(router, "BebopHookSelectorBanned");
+    });
+
+    // Sanity check: the same hook with a different leading selector executes the raw call
+    // (target is an EOA so the call is a no-op success). This guards against the previous
+    // test passing for the wrong reason (e.g. unrelated revert earlier in the swap flow).
+    it("should NOT revert raw-call hook whose data has a different selector", async function () {
+      const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
+      const routerNonce = nonceCounter++;
+      const makerNonce = nonceCounter++;
+      const fromAmount = e18("0.1");
+      const toAmount = e6(300);
+
+      const pmmOrder: PmmSingleOrder = {
+        expiry, taker_address: routerAddr, maker_address: makers[0].address,
+        maker_nonce: makerNonce, taker_token: WETH, maker_token: USDC,
+        taker_amount: fromAmount, maker_amount: toAmount,
+        receiver: routerAddr, packed_commands: 0n, flags: 0n,
+      };
+      const pmmMakerSig = await signPmmSingleOrder(makers[0], BEBOP_PMM, chainId, pmmOrder, 0n);
+      const pmmCalldata = encodePmmSwapSingle(pmmOrder, pmmMakerSig, 0n);
+
+      // Data starts with a clearly non-bebopHook selector — call target is an EOA, so
+      // the raw call returns success with no side effects; pre-hook check passes.
+      const benignData = "0xdeadbeef" + "00".repeat(32);
+      const hookFlags = (1n << 161n); // revertOnFail=true, useBebopHook=false, maker=0, post=false
+      const benignHook = {
+        targetContract: makers[0].address,
+        data: benignData,
+        hookSignature: "0x",
+        flags: hookFlags,
+      };
+
+      const HOOK_SIGN_TYPE_HASH = ethers.keccak256(ethers.toUtf8Bytes(
+        "BebopHook(address targetContract,bytes32 dataHash,uint256 makerNonce,uint256 flags)"
+      ));
+      const hookHash = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+        ["bytes32", "address", "bytes32", "uint256", "uint256"],
+        [HOOK_SIGN_TYPE_HASH, benignHook.targetContract, ethers.keccak256(benignHook.data), 0n, benignHook.flags]
+      ));
+      const hooksHash = ethers.keccak256(ethers.solidityPacked(["bytes32"], [hookHash]));
+
+      const order: RouterOrder = {
+        fromAmount, toAmount, limitAmount: 0n,
+        fromToken: NATIVE_TOKEN, toToken: USDC,
+        pmmFromToken: WETH, pmmToToken: USDC,
+        tokensOwner: ethers.ZeroAddress, receiver: receiver.address,
+        originAddress: ethers.ZeroAddress, oracle: ethers.ZeroAddress, checker: ethers.ZeroAddress,
+        info: packInfo(expiry), routerNonce, unsignedFlags: 0n,
+      };
+      const routerSig = await signRouterOrder(routerSigner, routerAddr, chainId, order, "0x", hooksHash);
+
+      // We expect the swap to progress past the pre-hook check and revert later (the
+      // junk PMM signature won't validate inside BebopSettlement). Critically, it should
+      // NOT revert with BebopHookSelectorBanned.
+      await expect(
+        router.connect(user).swap(fromAmount, order, "0x", routerSig, pmmCalldata, [benignHook], { value: fromAmount })
+      ).to.not.be.revertedWithCustomError(router, "BebopHookSelectorBanned");
+    });
   });
 
   describe("View helpers", function () {

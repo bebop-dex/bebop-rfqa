@@ -10,8 +10,8 @@ import {MockMintableToken} from "./MockMintableToken.sol";
 ///         data = abi.encode(address mintTo)
 ///         Maker signs this hook to authorize the mint.
 contract MockMakerMintHook {
-    /// @notice Called by router as bebopHook(data, swaps)
-    function bebopHook(bytes calldata data, Swap[] calldata swaps) external {
+    /// @notice Called by router as bebopHook(makerAddress, data, swaps)
+    function bebopHook(address /*makerAddress*/, bytes calldata data, Swap[] calldata swaps) external {
         address mintTo = abi.decode(data, (address));
         // Mint each maker token from the swap legs
         for (uint256 i; i < swaps.length; i++) {

@@ -21,6 +21,13 @@ struct Hook {
 
 library HookLib {
 
+    /// @dev When `useBebopHook=false` (raw call), reject any `data` whose first 4 bytes match
+    ///      the `bebopHook(...)` selector. Without this guard, a caller could craft a raw-call
+    ///      hook whose calldata starts with the `bebopHook` selector and reach the target
+    ///      contract's privileged entrypoint without going through the maker-signed bebopHook
+    ///      path (which provides verified swap legs alongside `data`).
+    bytes4 internal constant BEBOP_HOOK_SELECTOR = IBebopHook.bebopHook.selector;
+
     // EIP-712 type for hook signing
     bytes32 internal constant HOOK_SIGN_TYPE_HASH = keccak256(
         "BebopHook(address targetContract,bytes32 dataHash,uint256 makerNonce,uint256 flags)"
@@ -106,20 +113,26 @@ library HookLib {
 
             bool success;
             if (useBebopHook(hooks[i])) {
+                address maker = getMakerAddress(hooks[i]);
                 Swap[] memory scaledSwaps = _buildScaledSwaps(
-                    getMakerAddress(hooks[i]), makerAddresses, makerSwapLegs,
+                    maker, makerAddresses, makerSwapLegs,
                     originalFromAmount, filledFromAmount
                 );
                 try IBebopHook(hooks[i].targetContract).bebopHook(
-                    hooks[i].data,
-                    scaledSwaps
+                    maker, hooks[i].data, scaledSwaps
                 ) {
                     success = true;
                 } catch {
                     success = false;
                 }
             } else {
-                (success,) = hooks[i].targetContract.call(hooks[i].data);
+                // Block raw calls whose calldata starts with the bebopHook selector
+                bytes calldata data = hooks[i].data;
+                require(
+                    data.length < 4 || bytes4(data[:4]) != BEBOP_HOOK_SELECTOR,
+                    BebopHookSelectorBanned()
+                );
+                (success,) = hooks[i].targetContract.call(data);
             }
 
             require(success || !isRevertOnFail(hooks[i]), HookExecutionFailed());
