@@ -1,6 +1,6 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
-import { BebopOracle } from "../typechain-types";
+import { PoolsBasedOracle } from "../typechain-types";
 
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"; // 6 dec
 const WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"; // 18 dec
@@ -135,11 +135,11 @@ function logRoundtrip(label: string, fwd: bigint, rev: bigint) {
   console.log(`        fwd × rev = 1e36 ${sign} ${absDiff.toString().padStart(30)}   (rel err ${relStr})`);
 }
 
-describe("BebopOracle", function () {
-  let oracle: BebopOracle;
+describe("PoolsBasedOracle", function () {
+  let oracle: PoolsBasedOracle;
 
   before(async function () {
-    oracle = await (await ethers.getContractFactory("BebopOracle")).deploy();
+    oracle = await (await ethers.getContractFactory("PoolsBasedOracle")).deploy();
   });
 
   // ==================== getMidPrice ====================
@@ -232,29 +232,41 @@ describe("BebopOracle", function () {
       expect(await oracle.getSlippage(USDC, WETH, 0, 0, extraInfo)).to.equal(0);
     });
 
-    it("returns 0 when price improved (current > offchain)", async function () {
-      const lower = onchainPrice * 99n / 100n;
-      const extraInfo = encodeSlippageExtraInfo(lower, 0, 50000, [poolV3_005_fromUSDCtoWETH(TC_FROM_TO_INVERT)]);
+    // Slippage semantics (post-fix): fires when currentPrice > offchainMidPrice — i.e.,
+    // the toToken got more expensive in fromToken terms since signing → maker is paying
+    // out toToken whose market value now exceeds the fromToken they receive → refund.
+    // The opposite case (current <= offchain) means the maker is already at or above
+    // the quote-time mid → no refund owed.
+
+    it("returns 0 when market moved in maker's favor (current < offchain)", async function () {
+      // offchain is HIGHER than current → maker is selling toToken at *above* current
+      // market in fromToken terms → no need to refund.
+      const higher = onchainPrice * 101n / 100n;
+      const extraInfo = encodeSlippageExtraInfo(higher, 0, 50000, [poolV3_005_fromUSDCtoWETH(TC_FROM_TO_INVERT)]);
       expect(await oracle.getSlippage(USDC, WETH, 0, 0, extraInfo)).to.equal(0);
     });
 
-    it("returns exact diff when in [minSlippage, maxSlippage]", async function () {
-      const higher = onchainPrice * 101n / 100n;
-      const extraInfo = encodeSlippageExtraInfo(higher, 0, 50000, [poolV3_005_fromUSDCtoWETH(TC_FROM_TO_INVERT)]);
+    it("returns exact diff when market moved against maker (current > offchain) and diff in [min, max]", async function () {
+      // offchain is LOWER than current → toToken appreciated in fromToken terms →
+      // maker bleeding the fractional rise → charge slippage.
+      const lower = onchainPrice * 99n / 100n;
+      const extraInfo = encodeSlippageExtraInfo(lower, 0, 50000, [poolV3_005_fromUSDCtoWETH(TC_FROM_TO_INVERT)]);
       const slippage = await oracle.getSlippage(USDC, WETH, 0, 0, extraInfo);
-      const expected = (higher - onchainPrice) * 1000000n / higher;
+      const expected = (onchainPrice - lower) * 1000000n / lower;
       expect(slippage).to.equal(expected);
     });
 
-    it("capped at maxSlippage", async function () {
-      const higher = onchainPrice * 110n / 100n;
-      const extraInfo = encodeSlippageExtraInfo(higher, 0, 5000, [poolV3_005_fromUSDCtoWETH(TC_FROM_TO_INVERT)]);
+    it("capped at maxSlippage when market move exceeds cap", async function () {
+      // 10% adverse move; cap is 0.5% (5000 units) → returns the cap.
+      const lower = onchainPrice * 90n / 100n;
+      const extraInfo = encodeSlippageExtraInfo(lower, 0, 5000, [poolV3_005_fromUSDCtoWETH(TC_FROM_TO_INVERT)]);
       expect(await oracle.getSlippage(USDC, WETH, 0, 0, extraInfo)).to.equal(5000);
     });
 
-    it("returns 0 when diff < minSlippage", async function () {
-      const slightlyHigher = onchainPrice * 10001n / 10000n;
-      const extraInfo = encodeSlippageExtraInfo(slightlyHigher, 500, 50000, [poolV3_005_fromUSDCtoWETH(TC_FROM_TO_INVERT)]);
+    it("returns 0 when adverse move is below minSlippage deadzone", async function () {
+      // Tiny ~0.01% adverse move, minSlippage = 500 units (0.05%) → swallowed by deadzone.
+      const slightlyLower = onchainPrice * 9999n / 10000n;
+      const extraInfo = encodeSlippageExtraInfo(slightlyLower, 500, 50000, [poolV3_005_fromUSDCtoWETH(TC_FROM_TO_INVERT)]);
       expect(await oracle.getSlippage(USDC, WETH, 0, 0, extraInfo)).to.equal(0);
     });
 
@@ -340,16 +352,17 @@ describe("BebopOracle", function () {
       expect(await oracle.getSlippage(MOG, USDC, 0, 0, extraInfo)).to.equal(0);
     });
 
-    it("MOG→WBTC slippage returns correct diff for 1% price drop", async function () {
+    it("MOG→WBTC slippage returns correct diff for 1% adverse move (current > offchain)", async function () {
       const pools = [
         encodePoolInfo(POOL_UNI_V2, TC_FROM_MID_INVERT, 18, 18, 3000, MOG_WETH_V2,  WETH),
         encodePoolInfo(POOL_UNI_V3, TC_MID_TO_DIRECT,   8,  18, 3000, WBTC_WETH_V3, WETH),
       ];
       const onchain = await oracle.getMidPrice(MOG, WBTC, 0, 0, encodeMidPriceExtraInfo(pools));
-      const offchain = onchain * 101n / 100n;
+      // WBTC appreciated 1% in MOG terms vs quote-time mid → maker (delivering WBTC) is bleeding.
+      const offchain = onchain * 99n / 100n;
       const extraInfo = encodeSlippageExtraInfo(offchain, 0, 50000, pools);
       const slippage = await oracle.getSlippage(MOG, WBTC, 0, 0, extraInfo);
-      const expected = (offchain - onchain) * 1000000n / offchain;
+      const expected = (onchain - offchain) * 1000000n / offchain;
       expect(slippage).to.equal(expected);
     });
   });

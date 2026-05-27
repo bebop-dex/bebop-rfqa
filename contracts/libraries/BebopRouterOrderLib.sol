@@ -53,13 +53,19 @@ library BebopRouterOrderLib {
         }
     }
 
+    /// @notice Maximum input the signed order authorizes pulling from the token owner.
+    ///         exactIn (limitAmount >= 0): fromAmount. exactOut (limitAmount < 0): -limitAmount (maxFromAmount).
+    function maxFromAmount(BebopRouterOrder calldata order) internal pure returns (uint256) {
+        return order.limitAmount >= 0 ? order.fromAmount : uint256(-order.limitAmount);
+    }
+
     function getPermit2TransferInfo(BebopRouterOrder calldata order) internal pure returns (IPermit2.PermitTransferFrom memory) {
         // For exactIn (limitAmount >= 0): user signed for fromAmount
         // For exactOut (limitAmount < 0): user signed for -limitAmount (maxFromAmount)
         return IPermit2.PermitTransferFrom({
             permitted: IPermit2.TokenPermissions({
                 token: order.fromToken,
-                amount: order.limitAmount >= 0 ? order.fromAmount : uint256(-order.limitAmount)
+                amount: maxFromAmount(order)
             }),
             nonce: order.routerNonce,
             deadline: uint256(getExpiry(order))

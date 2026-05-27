@@ -575,7 +575,7 @@ describe("BebopRouter", function () {
 
     // --- Execute ---
     const exactAmount = cfg.isExactInput ? cfg.exactAmount : -cfg.exactAmount;
-    let tx;
+    let doCall: () => Promise<any>;
     if (cfg.isSettle) {
       let userSig: string;
       if (cfg.isPermit2) {
@@ -629,11 +629,18 @@ describe("BebopRouter", function () {
       } else {
         userSig = await signRouterOrder(user, routerAddr, chainId, routerOrder, extraInfo, hooksHash);
       }
-      tx = await router.connect(owner).settle(exactAmount, routerOrder, extraInfo, routerSig, pmmCalldata, hooks, userSig);
+      doCall = () => router.connect(owner).settle(exactAmount, routerOrder, extraInfo, routerSig, pmmCalldata, hooks, userSig);
     } else {
       const msgValue = isNativeInput ? userFundAmount : 0n;
-      tx = await router.connect(user).swap(exactAmount, routerOrder, extraInfo, routerSig, pmmCalldata, hooks, { value: msgValue });
+      doCall = () => router.connect(user).swap(exactAmount, routerOrder, extraInfo, routerSig, pmmCalldata, hooks, { value: msgValue });
     }
+
+    // Negative test: assert the call reverts with the expected custom error; skip balance/event checks.
+    if (cfg.expectRevert) {
+      await expect(doCall()).to.be.revertedWithCustomError(router, cfg.expectRevert);
+      return;
+    }
+    const tx = await doCall();
     const receipt = await tx.wait();
 
     // --- Snapshot after ---
@@ -749,6 +756,41 @@ describe("BebopRouter", function () {
     it("should revert settle with exactAmount=0", async function () {
       const o: RouterOrder = { fromAmount: 100n, toAmount: 100n, limitAmount: 0n, fromToken: USDC, toToken: WETH, pmmFromToken: USDC, pmmToToken: WETH, tokensOwner: user.address, receiver: receiver.address, originAddress: ethers.ZeroAddress, oracle: ethers.ZeroAddress, checker: ethers.ZeroAddress, info: packInfo(BigInt(Math.floor(Date.now()/1000)+3600)), routerNonce: 998n, unsignedFlags: 0n };
       await expect(router.connect(user).settle(0n, o, "0x", "0x"+"00".repeat(65), "0x4dcebcba"+"00".repeat(388), [], "0x"+"00".repeat(65))).to.be.revertedWithCustomError(router, "ExactAmountZeroForSettle");
+    });
+
+    // Regression: a settle caller (e.g. a mempool front-runner reusing the public sigs) must not
+    // be able to pull more than the signed quote size. `exactAmount` is unsigned, so an inflated
+    // exactIn value used to pull up to the owner's full allowance — now capped at fromAmount.
+    it("should revert settle exactIn when exactAmount exceeds signed fromAmount (over-pull)", async function () {
+      const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
+      const routerNonce = nonceCounter++;
+      const makerNonce = nonceCounter++;
+
+      const order: RouterOrder = {
+        fromAmount: e6(1000), toAmount: e18("0.5"), limitAmount: 0n,
+        fromToken: USDC, toToken: WETH, pmmFromToken: USDC, pmmToToken: WETH,
+        tokensOwner: user.address, receiver: user.address,
+        originAddress: ethers.ZeroAddress, oracle: ethers.ZeroAddress, checker: ethers.ZeroAddress,
+        info: packInfo(expiry), routerNonce, unsignedFlags: 0n,
+      };
+
+      // Valid PMM single calldata (decodes fine; never reached — the cap reverts first).
+      const pmmOrder: PmmSingleOrder = {
+        expiry, taker_address: routerAddr, maker_address: makers[0].address,
+        maker_nonce: makerNonce, taker_token: USDC, maker_token: WETH,
+        taker_amount: e6(1000), maker_amount: e18("0.5"),
+        receiver: routerAddr, packed_commands: 0n, flags: 0n,
+      };
+      const makerSig = await signPmmSingleOrder(makers[0], BEBOP_PMM, chainId, pmmOrder, 0n);
+      const pmmCalldata = encodePmmSwapSingle(pmmOrder, makerSig, 0n);
+
+      const routerSig = await signRouterOrder(routerSigner, routerAddr, chainId, order, "0x", ethers.ZeroHash);
+      const userSig = await signRouterOrder(user, routerAddr, chainId, order, "0x", ethers.ZeroHash);
+
+      // Attacker submits exactAmount = 2000 USDC, double the signed fromAmount of 1000 USDC.
+      await expect(
+        router.connect(owner).settle(e6(2000), order, "0x", routerSig, pmmCalldata, [], userSig)
+      ).to.be.revertedWithCustomError(router, "LimitAmountViolation");
     });
 
     // Security guard: when useBebopHook=false (raw call), the router must reject any hook

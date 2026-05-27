@@ -6,7 +6,7 @@ import {IUniswapV3Pool} from "./pool-interfaces/IUniswapV3Pool.sol";
 import {IUniswapV2Pair} from "./pool-interfaces/IUniswapV2Pair.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-/// @title BebopOracle
+/// @title PoolsBasedOracle
 /// @notice Computes onchain mid price from Uni V2/V3 pools and returns slippage
 ///         based on drift from an offchain price snapshot encoded in extraInfo.
 ///         Stateless, no admin — redeploy when new pool types are added.
@@ -14,7 +14,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         Prices are in "token1_full per token0_full, scaled 1e18" — i.e., normalized
 ///         by each pool's token decimals so both directions remain representable even for
 ///         asymmetric pairs (e.g. 18-dec low-priced tokens vs 6-dec stablecoins).
-contract BebopOracle is IOracle {
+contract PoolsBasedOracle is IOracle {
 
     /// @dev Pool returned zero for a token whose raw price is needed — dead pool, empty reserves,
     ///      or V3 pool at extreme tick where `sqrtPrice²/2^128` underflows. Inversion on zero
@@ -32,10 +32,25 @@ contract BebopOracle is IOracle {
     // ==================== IOracle ====================
 
     /// @notice Compute slippage by comparing offchain mid price to current onchain mid price.
+    ///
+    ///         Slippage fires when the market has moved AGAINST the maker between quote
+    ///         signing and execution — i.e., the toToken got more expensive in terms of
+    ///         the fromToken, so the maker is paying out toToken whose current market
+    ///         value exceeds the fromToken they receive. The router refunds this slippage
+    ///         portion to the maker; see BebopRouter._distributeFees.
+    ///
+    ///         Both prices are in `fromToken_full per toToken_full, scaled 1e18`, so the
+    ///         comparison `currentPrice > offchainMidPrice` means "needs more fromToken
+    ///         to buy one toToken now than at quote time" → toToken is more expensive →
+    ///         maker is bleeding → charge slippage.
+    ///
+    ///         The opposite case (currentPrice <= offchainMidPrice) means the maker is
+    ///         already at or above the quote-time mid — no refund owed.
+    ///
     /// @dev extraInfo layout:
-    ///      [0:32]   uint256 offchainMidPrice (from_full per to_full, scaled 1e18)
-    ///      [32:34]  uint16  minSlippage (units, 1 unit = 0.01 bps)
-    ///      [34:36]  uint16  maxSlippage (units)
+    ///      [0:32]   uint256 offchainMidPrice (fromToken_full per toToken_full, scaled 1e18)
+    ///      [32:34]  uint16  minSlippage (units, 1 unit = 0.01 bps; deadzone below which slippage = 0)
+    ///      [34:36]  uint16  maxSlippage (units; cap)
     ///      [36:37]  uint8   numPools
     ///      [37:]    PoolInfo[numPools] (48 bytes each, tightly packed)
     function getSlippage(
@@ -53,11 +68,12 @@ contract BebopOracle is IOracle {
 
         uint256 currentPrice = _computeMidPrice(poolData, numPools);
 
-        // Price improved or unchanged — no slippage
-        if (currentPrice >= offchainMidPrice) return 0;
+        // Market moved in maker's favor (or didn't move) — no slippage refund owed.
+        if (currentPrice <= offchainMidPrice) return 0;
 
-        // diff = percentage drop in units
-        uint256 diff = (offchainMidPrice - currentPrice) * UNIT_BASE / offchainMidPrice;
+        // diff = fractional rise of fromToken-per-toToken vs quote-time mid, in units.
+        // Equivalent to "fraction the toToken appreciated against fromToken since signing".
+        uint256 diff = (currentPrice - offchainMidPrice) * UNIT_BASE / offchainMidPrice;
 
         if (diff <= uint256(minSlippage)) return 0;
         return diff < uint256(maxSlippage) ? diff : uint256(maxSlippage);

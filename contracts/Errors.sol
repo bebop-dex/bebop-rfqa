@@ -39,8 +39,9 @@ error LimitAmountViolation();
 error ZeroTokensOwnerForSettle();
 /// @dev exactAmount cannot be 0 for settle (no balance-of-router mode)
 error ExactAmountZeroForSettle();
-/// @dev For permit2 + exactOut, limitAmount must be < 0 to define the max permitted spend
-error LimitAmountRequiredForPermit2ExactOut();
+/// @dev For exactOut settle (both Permit2 and plain-ERC20), limitAmount must be < 0 to define
+///      the max spend pulled from tokensOwner — the signed ceiling on the input transfer
+error LimitAmountRequiredForExactOut();
 
 // --- PMM errors ---
 /// @dev PMM calldata selector is not swapSingle or swapAggregate

@@ -41,6 +41,7 @@ contract BebopRouter is Ownable, ReentrancyGuardTransient, BebopValidation, Bebo
         uint256 slippageAmount;  // theoretical (from newToAmount), used for events only
         uint256 feeRate;         // raw rate in units, for recomputing from actual balance
         uint256 slippageRate;    // raw rate in units, for recomputing from actual balance
+        bool isExactOut;         // true for exactOut: receiver is owed exactly toAmountAfterFeeSlippage
     }
 
     // --- Events ---
@@ -196,14 +197,18 @@ contract BebopRouter is Ownable, ReentrancyGuardTransient, BebopValidation, Bebo
 
         SwapContext memory ctx = _validateAndPrepare(exactAmount, order, extraInfo, routerSignature, bebopPmmCalldata, hooks, true);
 
-        // Transfer fromToken from tokensOwner to router
+        // Transfer fromToken from tokensOwner to router.
+        // `exactAmount` is an unsigned function arg, so the pull MUST be bounded by a signed
+        // ceiling: exactIn is capped at fromAmount; exactOut must declare its max spend via
+        // limitAmount < 0. order.maxFromAmount() returns that ceiling for both modes — the
+        // same value the Permit2 path enforces internally as permitted.amount.
+        require(exactAmount > 0 || order.limitAmount < 0, LimitAmountRequiredForExactOut());
         if (order.isUsingPermit2()) {
-            // For exactOut with permit2, limitAmount must be set (< 0) to define the max spend
-            require(exactAmount > 0 || order.limitAmount < 0, LimitAmountRequiredForPermit2ExactOut());
             _transferWithPermit2(order, extraInfo, ctx.hooksHashVal, userSignature, ctx.calc.newFromAmount);
         } else {
             bytes32 orderHash = order.hash(extraInfo, ctx.hooksHashVal);
             validateSignature(order.tokensOwner, _toEIP712Digest(orderHash), userSignature);
+            require(ctx.calc.newFromAmount <= order.maxFromAmount(), LimitAmountViolation());
             IERC20(order.fromToken).safeTransferFrom(order.tokensOwner, address(this), ctx.calc.newFromAmount);
         }
 
@@ -293,10 +298,12 @@ contract BebopRouter is Ownable, ReentrancyGuardTransient, BebopValidation, Bebo
                 wrappedNativeToken.withdraw(wethBalance);
             }
             receiverAmount = address(this).balance;
+            require(!ctx.calc.isExactOut || receiverAmount >= ctx.calc.toAmountAfterFeeSlippage, LimitAmountViolation());
             require(order.limitAmount <= 0 || receiverAmount >= uint256(order.limitAmount), LimitAmountViolation());
             _transferNative(order.receiver, receiverAmount);
         } else {
             receiverAmount = IERC20(order.toToken).balanceOf(address(this));
+            require(!ctx.calc.isExactOut || receiverAmount >= ctx.calc.toAmountAfterFeeSlippage, LimitAmountViolation());
             require(order.limitAmount <= 0 || receiverAmount >= uint256(order.limitAmount), LimitAmountViolation());
             IERC20(order.toToken).safeTransfer(order.receiver, receiverAmount);
         }
@@ -411,6 +418,7 @@ contract BebopRouter is Ownable, ReentrancyGuardTransient, BebopValidation, Bebo
             calc.feeAmount = (calc.newToAmount * fee) / UNIT_BASE;
             calc.slippageAmount = (calc.newToAmount * slippage) / UNIT_BASE;
             calc.toAmountAfterFeeSlippage = targetToAmount;
+            calc.isExactOut = true;
             calc.newFromAmount = (order.fromAmount * calc.newToAmount) / order.toAmount;
             require(order.limitAmount >= 0 || calc.newFromAmount <= uint256(-order.limitAmount), LimitAmountViolation());
         } else {

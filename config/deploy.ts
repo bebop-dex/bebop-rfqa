@@ -1,5 +1,5 @@
 /**
- * Per-chain deployment configuration for BebopRouter + BebopOracle.
+ * Per-chain deployment configuration for BebopRouter + PoolsBasedOracle.
  *
  * Keyed by EVM chainId. The deploy script reads the config matching the connected network's
  * chainId. Any field can be overridden at deploy time via env vars (see scripts/deploy.ts).

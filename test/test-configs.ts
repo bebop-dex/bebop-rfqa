@@ -63,6 +63,7 @@ export interface SwapTestConfig {
   commands: string;
   isSettle?: boolean;              // if true, use settle() with user signature instead of swap()
   isPermit2?: boolean;             // if true + isSettle, user signs permit2 witness instead of EIP-712
+  expectRevert?: string;           // if set, assert swap/settle reverts with this custom error (skips balance/event checks)
   hooks?: TestHook[];
   expectedBalanceChanges: BalanceChange[];
   expectedPmmSwapEvents: ExpectedPmmSwapEvent[];
@@ -1442,6 +1443,7 @@ export const swapTestConfigs: SwapTestConfig[] = [
     routerInputToken: USDC, routerOutputToken: WETH,
     routerInputTokenAmount: e6(875), routerOutputTokenAmount: e18("0.35"),
     exactAmount: e18("0.35"),
+    limitAmount: -e6(884), // exactOut must declare its max spend (newFrom ≈ 883.84 USDC)
     orderType: "single",
     taker_tokens: [[USDC]], maker_tokens: [[WETH]],
     taker_amounts: [[e6(1000)]], maker_amounts: [[e18("0.4")]],
@@ -1465,6 +1467,29 @@ export const swapTestConfigs: SwapTestConfig[] = [
       fromAmount: 883838383n, toAmount: e18("0.35"),
       feePercent: 1.0, slippagePercent: 0,
     },
+  },
+
+  // Negative: exactOut where the (unsigned, attacker-suppliable) maker order under-delivers.
+  // Quote 1000 USDC -> 0.5 WETH; user wants 0.4 WETH; newFrom = 800 USDC. The stingy maker
+  // order pays only 0.01 WETH for the 800 USDC fill. Without the exactOut output floor the
+  // receiver would silently get 0.01 WETH; the floor now reverts with LimitAmountViolation.
+  {
+    name: "settle | exactOut | maker under-delivers | reverts LimitAmountViolation",
+    isExactInput: false,
+    isSettle: true,
+    routerInputToken: USDC, routerOutputToken: WETH,
+    routerInputTokenAmount: e6(1000), routerOutputTokenAmount: e18("0.5"),
+    exactAmount: e18("0.4"),
+    limitAmount: -e6(800),
+    orderType: "single",
+    taker_tokens: [[USDC]], maker_tokens: [[WETH]],
+    taker_amounts: [[e6(800)]], maker_amounts: [[e18("0.01")]], // stingy: 800 USDC -> 0.01 WETH
+    commands: "0x0000",
+    feePercent: 0, slippagePercent: 0,
+    expectRevert: "LimitAmountViolation",
+    expectedBalanceChanges: [],
+    expectedPmmSwapEvents: [],
+    expectedRouterSwapEvent: { fromToken: USDC, toToken: WETH, fromAmount: 0n, toAmount: 0n, feePercent: 0, slippagePercent: 0 },
   },
 
   // ==== MOCK AAVE HOOK TESTS ====

@@ -1,5 +1,5 @@
 /**
- * Deploy BebopOracle only (stateless, no constructor args).
+ * Deploy PoolsBasedOracle only (stateless, no constructor args).
  *
  * Usage:
  *   npm run deploy:oracle:<network>      (e.g. deploy:oracle:mainnet)
@@ -13,19 +13,19 @@ async function main() {
   await printHeader(cfg, chainId);
   console.log();
 
-  console.log("Deploying BebopOracle...");
-  const factory = await ethers.getContractFactory("BebopOracle");
+  console.log("Deploying PoolsBasedOracle...");
+  const factory = await ethers.getContractFactory("PoolsBasedOracle");
   const deployed = await factory.deploy();
   await deployed.waitForDeployment();
   const address = await deployed.getAddress();
-  console.log(`  BebopOracle:      ${address}`);
+  console.log(`  PoolsBasedOracle:      ${address}`);
 
   console.log();
   console.log("=== Summary ===");
   console.log(JSON.stringify({
     chain: cfg.name,
     chainId,
-    contract: "BebopOracle",
+    contract: "PoolsBasedOracle",
     address,
   }, null, 2));
 }

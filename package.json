@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "test": "npx hardhat test",
-    "test:oracles": "npx hardhat test test/BebopOracle.test.ts",
+    "test:oracles": "npx hardhat test test/PoolsBasedOracle.test.ts",
     "test:router": "npx hardhat test test/BebopRouter.test.ts",
     "test:gas": "REPORT_GAS=true npx hardhat test",
     "deploy:router": "npx hardhat run scripts/deploy-router.ts",
