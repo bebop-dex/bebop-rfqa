@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
-import "./PermitHash.sol";
+import "../external-libs/PermitHash.sol";
 
 struct BebopRouterOrder {
     uint256 fromAmount;

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.27;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeTransferLib} from "../libraries/SafeTransferLib.sol";
+import {SafeTransferLib} from "../external-libs/SafeTransferLib.sol";
 import {IBebopHook, Swap} from "../interfaces/IBebopHook.sol";
 import {IAavePool} from "./IAavePool.sol";
 

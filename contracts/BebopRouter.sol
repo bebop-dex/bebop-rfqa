@@ -7,7 +7,7 @@ import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/Reentrancy
 import {BebopRouterOrder, BebopRouterOrderLib} from "./libraries/BebopRouterOrderLib.sol";
 import {Hook, HookLib} from "./libraries/HookLib.sol";
 import {Swap} from "./interfaces/IBebopHook.sol";
-import {SafeTransferLib} from "./libraries/SafeTransferLib.sol";
+import {SafeTransferLib} from "./external-libs/SafeTransferLib.sol";
 import {IOracle} from "./interfaces/IOracle.sol";
 import {IChecker} from "./interfaces/IChecker.sol";
 import {IPermit2} from "./interfaces/IPermit2.sol";
